@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fte-config
+  namespace: customer-success-fte
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-broker:9092" # Example, adjust to your Kafka setup
+  DATABASE_URL: "postgresql://user:password@postgres:5432/fte_db" # Example, adjust to your PostgreSQL setup
+  FRONTEND_URL: "http://localhost:3000" # Example, adjust as needed
+  # Add other non-secret configurations here

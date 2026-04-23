@@ -1,0 +1,49 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fte-api-deployment
+  namespace: customer-success-fte
+  labels:
+    app: fte-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fte-api
+  template:
+    metadata:
+      labels:
+        app: fte-api
+    spec:
+      containers:
+      - name: fte-api
+        image: your-repo/customer-success-fte-api:latest # Replace with your image
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: fte-config
+        - secretRef:
+            name: fte-secrets
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
