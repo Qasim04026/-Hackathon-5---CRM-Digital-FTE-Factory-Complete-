@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
@@ -8,6 +7,9 @@ import asyncpg
 import os
 from dotenv import load_dotenv
 import logging
+
+# Kafka client imports as requested
+from production.kafka_client import FTEKafkaProducer, TOPICS
 
 load_dotenv()
 
@@ -87,6 +89,31 @@ async def submit_support_form(
                VALUES ($1, $2, $3, $4, $5, $6)""",
             conversation_id, "webform", "inbound", "user", f"Subject: {submission.subject}\n\n{submission.message}", datetime.now()
         )
+
+        # Publish to Kafka for agent processing
+        try:
+            from production.kafka_client import FTEKafkaProducer, TOPICS
+            import os
+            producer = FTEKafkaProducer(
+                bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+            )
+            await producer.start()
+            await producer.publish(TOPICS['tickets_incoming'], {
+                "ticket_id": str(ticket_id),
+                "conversation_id": str(conversation_id),
+                "customer_id": str(customer_id),
+                "channel": "web_form",
+                "customer_email": submission.email,
+                "customer_name": submission.name,
+                "subject": submission.subject,
+                "content": submission.message,
+                "category": submission.category,
+                "priority": submission.priority
+            })
+            await producer.stop()
+            logger.info(f"Published ticket {ticket_id} to Kafka")
+        except Exception as kafka_error:
+            logger.error(f"Kafka publish failed: {kafka_error}")
 
         return SupportFormResponse(
             ticket_id=ticket_id,

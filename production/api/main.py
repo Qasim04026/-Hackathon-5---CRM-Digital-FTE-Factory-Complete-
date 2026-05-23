@@ -92,18 +92,9 @@ async def health_check(conn: asyncpg.Connection = Depends(get_db_connection)):
 
 @app.post("/webhooks/gmail", summary="Handle Gmail Pub/Sub notifications")
 async def handle_gmail_webhook(request: Request):
-    # This endpoint would receive Google Pub/Sub push notifications
-    # The actual email fetching and processing would happen in gmail_handler.py
-    # and then published to Kafka for async processing.
     try:
         notification_data = await request.json()
         print(f"Received Gmail notification: {notification_data}")
-        # Decode and process the message from Pub/Sub
-        # For now, we just log it and acknowledge.
-
-        # In a full implementation, you'd likely publish this to Kafka
-        # await kafka_producer.publish("fte.channels.email.inbound", notification_data)
-
         return {"status": "success", "message": "Gmail notification received"}
     except Exception as e:
         print(f"Error processing Gmail webhook: {e}")
@@ -115,14 +106,8 @@ async def validate_twilio_request(request: Request, body: bytes = b''):
 
     validator = RequestValidator(TWILIO_AUTH_TOKEN)
     url = str(request.url)
-    # Twilio sends form-encoded data, which FastAPI parses before passing to route handler.
-    # We need the raw body for signature validation.
-    # As a workaround, we read the body here. Ensure the route doesn't read it again.
     form_params = await request.form()
-
-    # Convert ImmutableMultiDict to dict for Twilio validator
     params = {k: v for k, v in form_params.items()}
-
     twilio_signature = request.headers.get("X-Twilio-Signature", '')
 
     if not validator.validate(url, params, twilio_signature):
@@ -143,12 +128,12 @@ async def handle_whatsapp_webhook(form_params: dict = Depends(validate_twilio_re
 
         customer_phone = from_number.replace("whatsapp:", "")
         message_data = {
-            "email": None, # WhatsApp messages typically don't have email
+            "email": None,
             "phone": customer_phone,
             "content": message_body,
             "channel": "whatsapp",
             "channel_message_id": message_sid,
-            "original_message": form_params # Store original webhook data for debugging
+            "original_message": form_params
         }
 
         # Publish to Kafka for async processing by UnifiedMessageProcessor
@@ -168,13 +153,10 @@ async def handle_whatsapp_status_webhook(request: Request):
     try:
         status_data = await request.form()
         print(f"Received WhatsApp status update: {status_data}")
-        # In a real application, you would update the message delivery status in your database
-        # based on `status_data.get("MessageSid")` and `status_data.get("MessageStatus")`
         return {"status": "success", "message": "WhatsApp status update received"}
     except Exception as e:
         print(f"Error processing WhatsApp status webhook: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/conversations/{conversation_id}", summary="Get full conversation history", response_model=dict)
 async def get_conversation_history(conversation_id: uuid.UUID, conn: asyncpg.Connection = Depends(get_db_connection)):
@@ -220,7 +202,6 @@ async def lookup_customer(email: str = None, phone: str = None, conn: asyncpg.Co
 
 @app.get("/metrics/channels", summary="Get 24hr metrics by channel", response_model=dict)
 async def get_channel_metrics(conn: asyncpg.Connection = Depends(get_db_connection)):
-    # This is a simplified example. In production, you'd likely aggregate more sophisticated metrics.
     twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
 
     metrics = await conn.fetch(

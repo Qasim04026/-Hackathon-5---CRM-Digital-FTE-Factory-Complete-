@@ -1,4 +1,3 @@
-
 import os
 import json
 import asyncio
@@ -9,7 +8,6 @@ import asyncpg
 from uuid import UUID
 from datetime import datetime
 
-# Assuming prompts.py is in the same directory
 from production.agent.prompts import SYSTEM_PROMPT
 
 load_dotenv()
@@ -24,12 +22,11 @@ class CustomerSuccessAgent:
             raise ValueError("GEMINI_API_KEY not found in .env file")
         genai.configure(api_key=self.gemini_api_key)
 
-        self.db_url = os.getenv("DATABASE_URL") # e.g., "postgresql://user:password@host:port/database"
+        self.db_url = os.getenv("DATABASE_URL")
         if not self.db_url:
             raise ValueError("DATABASE_URL not found in .env file")
         self.pool = None
 
-        # Define Gemini Tools
         self.tools = [
             {
                 "name": "search_knowledge_base",
@@ -86,7 +83,7 @@ class CustomerSuccessAgent:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "ticket_id": {"type": "string"}, # Optional, if responding to an existing ticket
+                        "ticket_id": {"type": "string"},
                         "message": {"type": "string"},
                         "channel": {"type": "string"}
                     },
@@ -96,9 +93,9 @@ class CustomerSuccessAgent:
         ]
 
         self.model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=SYSTEM_PROMPT
-)
+            model_name="gemini-2.5-flash",
+            system_instruction=SYSTEM_PROMPT
+        )
 
     async def _init_db_pool(self):
         if not self.pool:
@@ -124,21 +121,58 @@ class CustomerSuccessAgent:
                 logger.error(f"Database query failed: {query} with error: {e}")
                 raise
 
-    # Gemini Tool implementations
     async def search_knowledge_base(self, query: str, max_results: int = 5):
         logger.info(f"Searching knowledge base for: {query}")
         try:
-            # Use simple text search on the content or title
-            # For better full-text search, replace with proper TSVECTOR usage
             results = await self._execute_db_query(
-                """SELECT title, content, category FROM knowledge_base
-                   WHERE tsv_content @@ to_tsquery('english_stem', $1)
-                   ORDER BY ts_rank(tsv_content, to_tsquery('english_stem', $1)) DESC
-                   LIMIT $2""",
-                query,
+                """SELECT title, content, category 
+                   FROM knowledge_base
+                   WHERE 
+                     content ILIKE $1 OR 
+                     title ILIKE $1 OR
+                     category ILIKE $2
+                   LIMIT $3""",
+                f"%{query}%",
+                f"%{query}%",
                 max_results
             )
-            return json.dumps([dict(row) for row in results])
+            
+            if not results:
+                words = query.lower().split()
+                all_results = []
+                for word in words[:3]:
+                    if len(word) > 3:
+                        word_results = await self._execute_db_query(
+                            """SELECT title, content, category 
+                               FROM knowledge_base
+                               WHERE content ILIKE $1 OR title ILIKE $1
+                               LIMIT $2""",
+                            f"%{word}%",
+                            max_results
+                        )
+                        all_results.extend(word_results)
+                
+                seen = set()
+                results = []
+                for r in all_results:
+                    if r['title'] not in seen:
+                        seen.add(r['title'])
+                        results.append(r)
+                results = results[:max_results]
+            
+            if not results:
+                return json.dumps({"message": "No relevant documentation found. Consider escalating to human support."})
+            
+            formatted = []
+            for r in results:
+                formatted.append({
+                    "title": r['title'],
+                    "content": r['content'],
+                    "category": r['category']
+                })
+            
+            return json.dumps(formatted)
+            
         except Exception as e:
             logger.error(f"Error searching knowledge base: {e}")
             return json.dumps({"error": str(e)})
@@ -199,8 +233,6 @@ class CustomerSuccessAgent:
                 "escalated", "human", UUID(ticket_id),
                 execute=True
             )
-            # Publish to escalation topic
-            # This assumes an external system consumes from fte.escalations topic
             return json.dumps({"status": "escalated", "ticket_id": str(ticket_id), "reason": reason})
         except Exception as e:
             logger.error(f"Error escalating ticket: {e}")
@@ -208,11 +240,8 @@ class CustomerSuccessAgent:
 
     async def send_response(self, message: str, channel: str, ticket_id: str = None):
         logger.info(f"Sending response to channel {channel}: {message}")
-        # In a real system, this would interact with channel-specific sending logic
-        # For now, we'll just log and return a success message.
         try:
             if ticket_id:
-                # Update conversation status if there's a ticket and response is sent
                 conversation_id = await self._execute_db_query(
                     "SELECT conversation_id FROM tickets WHERE id = $1", UUID(ticket_id), fetchval=True
                 )
@@ -234,19 +263,15 @@ class CustomerSuccessAgent:
 
         chat_history.append({"role": "user", "parts": [{"text": message_content}]})
 
-        # Heuristic for escalation detection (from src/agent/prototype.py logic)
         escalation_keywords = ["human", "agent", "speak to someone", "transfer", "escalate", "frustrated", "unhappy"]
         needs_escalation = any(keyword in message_content.lower() for keyword in escalation_keywords)
 
         try:
-            # Use a more direct tool call if escalation is needed, otherwise let Gemini decide
             if needs_escalation:
                 logger.info("Escalation keywords detected, attempting to escalate directly.")
-                # Create a dummy ticket if no conversation_id is available for escalation
-                # In a real scenario, we'd ensure a ticket exists or create one more robustly
-                ticket_id_for_escalation = conversation_id # Use conversation_id as a proxy for ticket_id if no explicit ticket exists
+                ticket_id_for_escalation = conversation_id
                 tool_call = {"functionCall": {"name": "escalate_to_human", "args": {"ticket_id": str(ticket_id_for_escalation), "reason": "Customer requested human assistance or expressed high frustration."}}}
-                response = await self.model.generate_content(
+                response = self.model.generate_content(
                        contents=chat_history,
                        safety_settings={
                         "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
@@ -256,7 +281,7 @@ class CustomerSuccessAgent:
                     }
                 )
             else:
-               response = await self.model.generate_content(
+               response = self.model.generate_content(
                       contents=chat_history,
                       safety_settings={
                         "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
@@ -266,33 +291,48 @@ class CustomerSuccessAgent:
                     }
                 )
 
-            # Extract tool calls and text responses
             tool_calls = []
             text_response = ""
 
             if response.candidates:
                 for part in response.candidates[0].content.parts:
-                    if part.function_call:
-                        tool_calls.append(part.function_call)
-                    if part.text:
-                        text_response += part.text
+                    try:
+                        if hasattr(part, 'function_call') and part.function_call:
+                            tool_calls.append(part.function_call)
+                        elif hasattr(part, 'text') and part.text:
+                            text_response += part.text
+                    except Exception as part_error:
+                        logger.warning(f"Part parse error: {part_error}")
+                        try:
+                            text_response += str(part)
+                        except:
+                            pass
+
+            if not text_response:
+                try:
+                    text_response = response.text
+                except:
+                    pass
+                if not text_response:
+                    try:
+                        text_response = str(response.candidates[0].content.parts[0])
+                    except:
+                        text_response = "I understand your issue. Let me help you with that."
 
             if tool_calls:
                 for tool_call in tool_calls:
                     tool_name = tool_call.name
                     tool_args = {k: v for k, v in tool_call.args.items()}
 
-                    # Add customer_id and channel to tool args if they exist and are relevant
                     if "customer_id" in tool_args and not tool_args["customer_id"] and customer_id:
                         tool_args["customer_id"] = customer_id
                     if "channel" in tool_args and not tool_args["channel"] and current_channel:
                         tool_args["channel"] = current_channel
 
-                    # Execute the tool function
                     if hasattr(self, tool_name):
                         func = getattr(self, tool_name)
                         tool_result = await func(**tool_args)
-                        return tool_result, tool_calls # Return after first tool call for simplicity, can be extended for multiple
+                        return tool_result, tool_calls
                     else:
                         logger.warning(f"Agent tried to call unknown tool: {tool_name}")
                         return json.dumps({"error": f"Unknown tool: {tool_name}"}), []
@@ -302,5 +342,3 @@ class CustomerSuccessAgent:
         except Exception as e:
             logger.error(f"Error in agent run: {e}")
             return json.dumps({"error": str(e)}), []
-
-

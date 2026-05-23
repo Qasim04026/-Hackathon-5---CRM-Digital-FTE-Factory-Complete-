@@ -1,4 +1,3 @@
-
 import os
 import json
 import asyncio
@@ -12,6 +11,16 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+TOPICS = {
+    'tickets_incoming': 'fte.tickets.incoming',
+    'email_inbound': 'fte.channels.email.inbound',
+    'whatsapp_inbound': 'fte.channels.whatsapp.inbound',
+    'webform_inbound': 'fte.channels.webform.inbound',
+    'escalations': 'fte.escalations',
+    'metrics': 'fte.metrics',
+    'dlq': 'fte.dlq'
+}
+
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
 class FTEKafkaProducer:
@@ -21,6 +30,7 @@ class FTEKafkaProducer:
         else:
             self.bootstrap_servers = KAFKA_BOOTSTRAP_SERVERS
         self.producer = None
+
     async def start(self):
         while True:
             try:
@@ -76,7 +86,7 @@ class FTEKafkaConsumer:
     async def stop(self):
         if self.consumer:
             await self.consumer.stop()
-            logger.info(f"Kafka Consumer for topics {self.topics} stopped.")
+            logger.info("Kafka Consumer stopped.")
 
     async def consume(self):
         if not self.consumer:
@@ -84,7 +94,7 @@ class FTEKafkaConsumer:
             return
         try:
             async for msg in self.consumer:
-                yield json.loads(msg.value.decode("utf-8"))
+                yield msg
         except Exception as e:
             logger.error(f"Error during Kafka consumption: {e}")
 
@@ -113,11 +123,14 @@ if __name__ == "__main__":
         try:
             async for msg in consumer.consume():
                 print(f"Received message: {msg}")
-                break # For testing, stop after one message
+                break
         except asyncio.CancelledError:
             pass
         finally:
             await producer.stop()
             await consumer.stop()
 
-    asyncio.run(test_kafka_client())
+    async def run_test():
+        await test_kafka_client()
+
+    asyncio.run(run_test())
